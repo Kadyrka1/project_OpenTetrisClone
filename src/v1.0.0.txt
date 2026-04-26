@@ -1,1 +1,1161 @@
 
+//-----------------------------------------------------------------------------------------------
+//------LIBRARIES----------
+//LCD libraries
+#include <Wire.h>
+#include <LiquidCrystal_I2C.h> 
+//grid libraries
+#include <utility> //necessary for use of pairs
+#include <FastLED.h>
+#include <ctype.h>
+
+//-----------------------------------------------------------------------------------------------
+//----------------PINOUTS----------------
+//-----------------------------------------------------------------------------------------------
+
+// ---------------- JOYSTICK----------------
+const int UP_PIN    = 27; //orange
+const int DOWN_PIN  = 14; //yellow
+const int LEFT_PIN  = 16; //blue
+const int RIGHT_PIN = 17;//green
+
+// ---------------- BUTTON ----------------
+const int BUTTON_PIN = 26;
+
+// ---------------- LCD CONFIG ----------------
+LiquidCrystal_I2C lcd(0x27, 20, 4);   // If blank, try 0x3F
+
+unsigned long lastUpdate = 0;
+int counter = 0;
+
+// ---------------- LED CONFIG ----------------
+#define LED_PIN       23
+#define NUM_LEDS      100
+#define BRIGHTNESS    80
+#define LED_TYPE      WS2812B
+#define COLOUR_ORDER   GRB
+
+CRGB leds[NUM_LEDS];
+
+// ---------------- 9 COLOURS ----------------
+
+const CRGB COLOURS[9] = {
+CRGB(255,0,0), //Red
+CRGB(0,255,0), //green
+CRGB(0,0,255), //Blue
+CRGB(255,255,0), //Yellow
+CRGB(255,0,255), //Magenta
+CRGB(0,255,255), //Cyan
+CRGB(255,128,0),//Orange
+CRGB(255,255,255),//White
+CRGB(0,0,0)//Black (off)
+};
+
+
+
+// Tetriminos
+#define PIECE_WIDTH 4
+#define PIECE_HEIGHT 4
+#define PIECE_SIZE PIECE_WIDTH*PIECE_HEIGHT
+#define DIFF_PIECES 7
+
+//Data for current part
+int piece_id;
+int piece_rotation;
+int piece_x;
+int piece_y;
+int piece_colour = 0;
+
+//Sequence of parts to avoid duplication or non-occurrence of a stone
+byte piece_sequence[DIFF_PIECES];
+byte sequence_count = DIFF_PIECES;
+
+// =====================================================
+//             VIRTUAL + REAL MATRIX DIMENSIONS
+// =====================================================
+
+// "Virtual" matrix (game logic grid)
+const int VIRTUAL_W = 16;
+const int VIRTUAL_H = 16;
+
+// Real grid size (LED physical)
+static const int W = 10;
+static const int H = 10;
+// Crop settings: remove 3 from each side of 16x16 -> 10x10
+static const int CROP = 3;
+
+//virtual grid and others with colour and status  
+using Cell = std::pair<uint8_t, uint8_t>; // {colourIndex, status}
+
+Cell grid_locked[VIRTUAL_W][VIRTUAL_H];
+Cell grid_entity[VIRTUAL_W][VIRTUAL_H];
+Cell grid_entity_prev[VIRTUAL_W][VIRTUAL_H];
+Cell grid_overlap[VIRTUAL_W][VIRTUAL_H];
+
+// array with the sum for each row
+// needed for row fill check
+std::array<int, H> row_sum;
+
+// =====================================================
+//                   SHAPES (16x4 each)
+// =====================================================
+
+const byte empty[] = {0};
+
+const byte piece_I[] = {
+  0, 1, 0, 0,
+  0, 1, 0, 0,
+  0, 1, 0, 0,
+  0, 1, 0, 0,
+
+  0, 0, 0, 0,
+  1, 1, 1, 1,
+  0, 0, 0, 0,
+  0, 0, 0, 0,
+
+  0, 0, 1, 0,
+  0, 0, 1, 0,
+  0, 0, 1, 0,
+  0, 0, 1, 0,
+
+  0, 0, 0, 0,
+  0, 0, 0, 0,
+  1, 1, 1, 1,
+  0, 0, 0, 0,
+};
+
+const byte piece_T[] = {
+  0, 0, 0, 0,
+  0, 1, 0, 0,
+  1, 1, 1, 0,
+  0, 0, 0, 0,
+
+  0, 0, 0, 0,
+  0, 1, 0, 0,
+  0, 1, 1, 0,
+  0, 1, 0, 0,
+
+  0, 0, 0, 0,
+  0, 0, 0, 0,
+  1, 1, 1, 0,
+  0, 1, 0, 0,
+
+  0, 0, 0, 0,
+  0, 1, 0, 0,
+  1, 1, 0, 0,
+  0, 1, 0, 0,
+};
+
+const byte piece_L[] = {
+  0, 0, 0, 0,
+  0, 0, 1, 0,
+  1, 1, 1, 0,
+  0, 0, 0, 0,
+
+  0, 0, 0, 0,
+  0, 1, 0, 0,
+  0, 1, 0, 0,
+  0, 1, 1, 0,
+
+  0, 0, 0, 0,
+  0, 0, 0, 0,
+  1, 1, 1, 0,
+  1, 0, 0, 0,
+
+  0, 0, 0, 0,
+  1, 1, 0, 0,
+  0, 1, 0, 0,
+  0, 1, 0, 0,
+};
+
+const byte piece_J[] = {
+  0, 0, 0, 0,
+  1, 0, 0, 0,
+  1, 1, 1, 0,
+  0, 0, 0, 0,
+
+  0, 0, 0, 0,
+  0, 1, 1, 0,
+  0, 1, 0, 0,
+  0, 1, 0, 0,
+
+  0, 0, 0, 0,
+  0, 0, 0, 0,
+  1, 1, 1, 0,
+  0, 0, 1, 0,
+
+  0, 0, 0, 0,
+  0, 1, 0, 0,
+  0, 1, 0, 0,
+  1, 1, 0, 0,
+};
+
+const byte piece_S[] = {
+  0, 0, 0, 0,
+  0, 1, 1, 0,
+  1, 1, 0, 0,
+  0, 0, 0, 0,
+
+  0, 0, 0, 0,
+  0, 1, 0, 0,
+  0, 1, 1, 0,
+  0, 0, 1, 0,
+
+  0, 0, 0, 0,
+  0, 1, 1, 0,
+  1, 1, 0, 0,
+  0, 0, 0, 0,
+
+  0, 0, 0, 0,
+  0, 1, 0, 0,
+  0, 1, 1, 0,
+  0, 0, 1, 0,
+};
+
+const byte piece_Z[] = {
+  0, 0, 0, 0,
+  1, 1, 0, 0,
+  0, 1, 1, 0,
+  0, 0, 0, 0,
+
+  0, 0, 0, 0,
+  0, 0, 1, 0,
+  0, 1, 1, 0,
+  0, 1, 0, 0,
+
+  0, 0, 0, 0,
+  1, 1, 0, 0,
+  0, 1, 1, 0,
+  0, 0, 0, 0,
+
+  0, 0, 0, 0,
+  0, 0, 1, 0,
+  0, 1, 1, 0,
+  0, 1, 0, 0,
+};
+
+const byte piece_O[] = {
+  0, 0, 0, 0,
+  1, 1, 0, 0,
+  1, 1, 0, 0,
+  0, 0, 0, 0,
+
+  0, 0, 0, 0,
+  1, 1, 0, 0,
+  1, 1, 0, 0,
+  0, 0, 0, 0,
+
+  0, 0, 0, 0,
+  1, 1, 0, 0,
+  1, 1, 0, 0,
+  0, 0, 0, 0,
+
+  0, 0, 0, 0,
+  1, 1, 0, 0,
+  1, 1, 0, 0,
+  0, 0, 0, 0,
+};
+
+const byte *pieces[DIFF_PIECES + 1] = {
+  empty,
+  piece_Z, //red
+  piece_S, //green 
+  piece_J, //blue
+  piece_O, //yellow
+  piece_T, //purple/magenta
+  piece_I, //cyan
+  piece_L, //orange
+};
+// =====================================================
+//                     SCORE KEEPING
+// =====================================================
+//As per Tetris BPS 
+//row clears are scored as follows
+const int pts_single = 40;
+const int pts_double = 100;
+const int pts_triple = 300;
+const int pts_quad = 1200;
+
+const int LINES_PER_LEVEL = 10;
+
+//Scores
+unsigned int top_score = 0;
+unsigned int score = 0;
+int total_lines_cleared = 0;
+int level = 0;
+
+//last input memory for hard drop
+int last_Inp;
+// =====================================================
+//                     GAME CONTROL
+// =====================================================
+
+bool in_menu = true;
+bool btn_pressed = true;
+
+
+// =====================================================
+//                   Virtual Grid Funktions
+// =====================================================
+
+// status 0 == empty spot
+// status 1 == entity
+// status 3 == piece locked
+// status 5 == border
+// any even status == overlap
+
+void action_DefineVirtGrid(){
+  // visible "walls" should be at x=2 and x=13, y=13 if you want them on LED area
+
+  for (int i = 0; i < VIRTUAL_H; ++i) {
+    grid_locked[2][i]  = {6, 5};   // colour = white, status = border
+    grid_locked[13][i] = {6, 5};
+  }
+
+  for (int i = 0; i < VIRTUAL_W; ++i) {
+    grid_locked[i][13] = {6, 5};
+  }
+
+}
+
+void action_ClearAllGrids() {
+  for (int x = 0; x < VIRTUAL_W; x++) {
+    for (int y = 0; y < VIRTUAL_H; y++) {
+      grid_entity[x][y]      = Cell{8, 0};
+      grid_entity_prev[x][y] = Cell{8, 0};
+      grid_overlap[x][y]     = Cell{8, 0};
+    }
+  }
+}
+
+void action_ClearLockedGrid() {
+  for (int x = 0; x < VIRTUAL_W; x++) {
+    for (int y = 0; y < VIRTUAL_H; y++) {
+      grid_locked[x][y]      = Cell{8, 0};
+    }
+  }
+}
+
+// Helper function: Remove current piece from the grid
+void action_RemovePieceFromGrid() {
+  const byte *piece = pieces[piece_id] + (piece_rotation * PIECE_SIZE);
+  
+  for (int y = 0; y < PIECE_HEIGHT; y++) {
+    for (int x = 0; x < PIECE_WIDTH; x++) {
+      if (piece[y * PIECE_WIDTH + x] == 1) {
+        int nx = piece_x + x;
+        int ny = piece_y + y;
+        
+        if (nx >= 0 && nx < VIRTUAL_W && ny >= 0 && ny < VIRTUAL_H) {
+          // Clear this cell (set to black/empty)
+          grid_entity[nx][ny] = Cell{8, 0};
+        }
+      }
+    }
+  }
+}
+
+// Helper function: Add current piece to the grid
+void action_AddPieceToGrid() {
+  const byte *piece = pieces[piece_id] + (piece_rotation * PIECE_SIZE);
+  
+  for (int y = 0; y < PIECE_HEIGHT; y++) {
+    for (int x = 0; x < PIECE_WIDTH; x++) {
+      if (piece[y * PIECE_WIDTH + x] == 1) {
+        int nx = piece_x + x;
+        int ny = piece_y + y;
+        
+        if (nx >= 0 && nx < VIRTUAL_W && ny >= 0 && ny < VIRTUAL_H) {
+          // Set the colour and status
+          grid_entity[nx][ny] = Cell{(uint8_t)piece_colour, 1};
+        }
+      }
+    }
+  }
+}
+
+void action_LockPiece() {
+  for (int x = 0; x < VIRTUAL_W; x++) {
+    for (int y = 0; y < VIRTUAL_H; y++) {
+      if (grid_entity[x][y].second != 0) {
+        grid_locked[x][y] = grid_entity[x][y];   // copy colour
+        grid_locked[x][y].second = 3;            // locked
+        grid_entity[x][y] = Cell{8, 0};        // clear entity cell
+      }
+    }
+  }
+}
+
+
+// =====================================================
+//                   IF Functions
+// =====================================================
+
+bool if_Collision(int new_x, int new_y, int new_rotation) {
+  const byte *piece = pieces[piece_id] + (new_rotation * PIECE_SIZE);
+
+  for (int y = 0; y < PIECE_HEIGHT; y++) {
+    for (int x = 0; x < PIECE_WIDTH; x++) {
+      if (piece[y * PIECE_WIDTH + x] != 1) continue;
+
+      int nx = new_x + x;
+      int ny = new_y + y;
+
+      // outside virtual grid -> collision
+      if (nx < 0 || nx >= VIRTUAL_W || ny < 0 || ny >= VIRTUAL_H) return true;
+
+      // collides with borders or locked blocks in grid_locked
+      if (grid_locked[nx][ny].second != 0) return true;
+    }
+  }
+  return false;
+}
+
+bool if_GameEnd(){
+  if (row_sum[0])
+    return 1;
+  else 
+    return 0;
+}
+
+// =====================================================
+//                   ACTION Functions
+// =====================================================
+//--------------LCD Functions------------------
+void updateDisplay(int latestScore, int topScore, bool inMenuState) {
+
+  lcd.clear();
+
+  if (inMenuState) {
+    lcd.setCursor(0,0);
+    lcd.print("=== MAIN MENU ===");
+
+    lcd.setCursor(0,1);
+    lcd.print("Your score: ");
+    lcd.print(latestScore);
+    
+    lcd.setCursor(0,2);
+    lcd.print("Top score: ");
+    lcd.print(topScore);
+
+    lcd.setCursor(0,3);
+    lcd.print("Press to start game");
+  }
+  else {
+
+    lcd.setCursor(0,0);
+    lcd.print("Game Running...");
+
+    lcd.setCursor(0,1);
+    lcd.print("Your score: ");
+    lcd.print(latestScore);
+    
+    lcd.setCursor(0,2);
+    lcd.print("Top score: ");
+    lcd.print(topScore);
+
+    lcd.setCursor(0,3);
+    lcd.print("Press to stop");
+  }
+}
+
+//-----------LED GRID FUNCTIONS ---------
+// --------------------------------
+// Helper function for Start animation
+// Helper function for Start animation
+void action_CommandExecutor(int command_line) {
+    while (command_line > 0) {
+      delay(33);
+      action_RemovePieceFromGrid();
+      switch (command_line%4) {
+        case 0:
+          piece_rotation = (piece_rotation+1)%4;
+          break;
+        case 1:
+          piece_x--;
+          break;
+        case 2:
+          piece_y++;
+          break;
+        case 3:
+          piece_x++;
+          break;
+      }
+      command_line >>= 2;
+      action_AddPieceToGrid();
+      action_RenderFrame();
+  }
+  action_LockPiece();
+  action_RemovePieceFromGrid();
+}
+
+void action_StartAnimation() {
+
+  // 00 == rotation
+  // 01 == left
+  // 10 == down 
+  // 11 == right
+
+  // ----Letter "S"----
+  action_SpawnPiece(2, 3, 6, 1, 0);
+  action_AddPieceToGrid();
+  action_RenderFrame();
+  int command_line = 0b1001001001100010011000; 
+  action_CommandExecutor(command_line);
+
+  action_SpawnPiece(2, 3, 6, 1, 0);
+  action_AddPieceToGrid();
+  action_RenderFrame();
+  command_line = 0b1001100100011001;
+  action_CommandExecutor(command_line);
+
+  // ----Letter "t"----
+  action_SpawnPiece(3, 6, 6, 1, 0);
+  action_AddPieceToGrid();
+  action_RenderFrame();
+  command_line = 0b1010011010011010;
+  action_CommandExecutor(command_line);
+
+  action_SpawnPiece(3, 5, 6, 1, 0);
+  action_AddPieceToGrid();
+  action_RenderFrame();
+  command_line = 0b0110011010;
+  action_CommandExecutor(command_line);
+
+  // ----Letter "a"----
+  action_SpawnPiece(4, 3, 6, 1, 0);
+  action_AddPieceToGrid();
+  action_RenderFrame();
+  command_line = 0b011010011000101110;
+  action_CommandExecutor(command_line);
+
+  action_SpawnPiece(4, 5, 6, 1, 0);
+  action_AddPieceToGrid();
+  action_RenderFrame();
+  command_line = 0b011000101110001000101110;
+  action_CommandExecutor(command_line);
+
+  // ----Letter "r"----
+  action_SpawnPiece(5, 3, 6, 1, 0);
+  action_AddPieceToGrid();
+  action_RenderFrame();
+  command_line = 0b1010111000101110;
+  action_CommandExecutor(command_line);
+
+  // ----Letter "t"----
+  action_SpawnPiece(6, 6, 6, 1, 0);
+  action_AddPieceToGrid();
+  action_RenderFrame();
+  command_line = 0b10101010111011111011;
+  action_CommandExecutor(command_line);
+
+  action_SpawnPiece(6, 5, 6, 1, 0);
+  action_AddPieceToGrid();
+  action_RenderFrame();
+  command_line = 0b11101110111011;
+  action_CommandExecutor(command_line);
+}
+
+void action_LostAnimation () {
+  // ----Letter "L"----
+  action_SpawnPiece(2, 7, 6, 1, 0);
+  action_AddPieceToGrid();
+  action_RenderFrame();
+  int command_line = 0b1001100110001001100110;
+  action_CommandExecutor(command_line);
+
+  action_SpawnPiece(2, 6, 6, 1, 0);
+  action_AddPieceToGrid();
+  action_RenderFrame();
+  command_line = 0b01100110011001;
+  action_CommandExecutor(command_line);
+
+  // ----Letter "o"----
+  action_SpawnPiece(3, 6, 6, 1, 0);
+  action_AddPieceToGrid();
+  action_RenderFrame();
+  command_line = 0b1010011010011010;
+  action_CommandExecutor(command_line);
+
+  action_SpawnPiece(3, 3, 6, 1, 0);
+  action_AddPieceToGrid();
+  action_RenderFrame();
+  command_line = 0b100010100010100010;
+  action_CommandExecutor(command_line);
+
+  action_SpawnPiece(3, 3, 6, 1, 0);
+  action_AddPieceToGrid();
+  action_RenderFrame();
+  command_line = 0b100110001000;
+  action_CommandExecutor(command_line);
+
+  // ----Letter "s"----
+  action_SpawnPiece(4, 3, 6, 1, 0);
+  action_AddPieceToGrid();
+  action_RenderFrame();
+  command_line = 0b1000100010111000101110;
+  action_CommandExecutor(command_line);
+
+  action_SpawnPiece(4, 3, 6, 1, 0);
+  action_AddPieceToGrid();
+  action_RenderFrame();
+  command_line = 0b101000101110;
+  action_CommandExecutor(command_line);
+
+  // ----Letter "t"----
+  action_SpawnPiece(5, 6, 6, 1, 0);
+  action_AddPieceToGrid();
+  action_RenderFrame();
+  command_line = 0b10101011101011111011;
+  action_CommandExecutor(command_line);
+
+  action_SpawnPiece(5, 5, 6, 1, 0);
+  action_AddPieceToGrid();
+  action_RenderFrame();
+  command_line = 0b10111110111011;
+  action_CommandExecutor(command_line);
+}
+
+
+void action_GravityOnPiece() {
+  // save previous entity grid
+  for (int x = 0; x < VIRTUAL_W; x++) {
+    for (int y = 0; y < VIRTUAL_H; y++) {
+      grid_entity_prev[x][y] = grid_entity[x][y];
+    }
+  }
+
+  // remove current piece from entity
+  action_RemovePieceFromGrid();
+
+  // test move down
+  if (if_Collision(piece_x, piece_y + 1, piece_rotation)) {
+    // restore previous entity state
+    for (int x = 0; x < VIRTUAL_W; x++) {
+      for (int y = 0; y < VIRTUAL_H; y++) {
+        grid_entity[x][y] = grid_entity_prev[x][y];
+      }
+    }
+    action_LockPiece();
+    action_SumRows();
+    int cleared_now = action_ClearFilledRowsAndDrop();
+    action_updateScore(cleared_now);
+    int NewPiece = action_getPieceSelection();
+    action_SpawnPiece(NewPiece - 1, NewPiece, 6, 0, 0);
+  } else {
+    piece_y++;
+    action_AddPieceToGrid();
+  }
+}
+
+
+void action_SumRows() {
+  action_ClearRowSum();
+
+  // Sum ONLY the visible 10x10 area (virtual x: 3..12, y: 3..12)
+  for (int vy = CROP; vy < CROP + H; vy++) {
+    int sum = 0;
+    for (int vx = CROP; vx < CROP + W; vx++) {
+      if (grid_locked[vx][vy].second == 3) sum += 1; // count locked blocks
+    }
+    row_sum[vy - CROP] = sum; // store as 0..9
+  }
+}
+
+void action_ClearRowSum() {
+  for (int i = 0; i < H; ++i)
+    row_sum[i] = 0;
+}
+
+
+void clearEntity() {
+  for (int x = 0; x < VIRTUAL_W; x++) {
+    for (int y = 0; y < VIRTUAL_H; y++) {
+      grid_entity[x][y] = Cell{8, 0};
+    }
+  }
+}
+int action_getPieceSelection(){
+  int selected_Piece;
+  if ( sequence_count >= DIFF_PIECES ) {
+    // List empty
+    int i, j, k;
+    for (i = 0; i < DIFF_PIECES; i++) {
+      do {
+        // Choose random part
+        j = random(DIFF_PIECES) % DIFF_PIECES;
+        // Check if already in the sequence
+        for (k = 0; k < i; k++) {
+          if (piece_sequence[k] == j) break;
+        }
+        //When part in sequence, generate new
+      } while (k < i);
+      // Add part
+      piece_sequence[i] = j;
+    }
+    // Counter reset
+    sequence_count = 0;
+  }
+  // selected ID is the following
+  selected_Piece = piece_sequence[sequence_count++] + 1;
+  return selected_Piece;
+}
+void action_SpawnPiece(int colour, int id, int x, int y, int rotation) {
+  clearEntity();
+
+  piece_colour = colour;
+  piece_id = id;
+
+  piece_x = x;
+  piece_y = y;           // better: spawn near top of visible area
+  piece_rotation = rotation;
+
+  action_AddPieceToGrid();
+
+  Serial.print("Spawned piece ID: ");
+  Serial.print(piece_id);
+  Serial.print(" at (");
+  Serial.print(piece_x);
+  Serial.print(",");
+  Serial.print(piece_y);
+  Serial.print(") colour: ");
+  Serial.println(piece_colour);   // <-- you were missing println
+}
+
+int action_ClearFilledRowsAndDrop() {
+  const int FULL = W; // 10
+  int cleared = 0;//For score keeping
+
+  // work bottom -> top in visible area
+  for (int i = H - 1; i >= 0; --i) {
+    if (row_sum[i] == FULL) {
+      int vy = CROP + i;
+
+      // shift rows above (vy-1 ... CROP) down by 1
+      for (int y = vy; y > CROP; --y) {
+        for (int vx = CROP; vx < CROP + W; ++vx) {
+          grid_locked[vx][y] = grid_locked[vx][y - 1];
+        }
+      }
+
+      // clear the top visible row
+      for (int vx = CROP; vx < CROP + W; ++vx) {
+        grid_locked[vx][CROP] = Cell{8, 0};
+      }
+
+      cleared++;
+
+      // after dropping, you must recompute row sums
+      action_SumRows();
+
+      // re-check same i, because new row content fell into it
+      i++;
+    }
+  }
+  return cleared;//total number of rows deleted for this clearing
+}
+
+// ---------------- SCORE KEEPING ----------------
+void action_updateScore(int clearedNow){
+  int base = 0;
+  if (clearedNow){//only check if not zero
+
+  // Accumulate lines and update level
+  total_lines_cleared += clearedNow;
+  level = total_lines_cleared / LINES_PER_LEVEL;
+  // Original BPS scoring multiplied by (level + 1)
+  
+  switch (clearedNow){
+    case 1://if only one row deleted
+      base = pts_single; break;
+    case 2://2 rows deleted
+      base = pts_double; break;
+    case 3:
+      base = pts_triple; break;
+    default:
+      base = pts_quad;  break; 
+    }
+  }
+
+  score += (unsigned long)base * (level + 1);
+
+  //write out score
+  Serial.println("Score Updated: ");
+  Serial.println(score);
+
+  if (score>top_score){//update top score
+    top_score = score;
+  }
+  updateDisplay(score, top_score, in_menu);
+
+}
+
+// ---------------- GRID ----------------
+
+
+int xyToIndex(int x, int y) {
+  if (x < 0 || x >= W || y < 0 || y >= H) return -1;
+
+  int rowFromBottom = (H - 1) - y;
+  int base = rowFromBottom * W;
+
+  if (rowFromBottom % 2 == 0)
+    return base + x;
+  else
+    return base + (W - 1 - x);
+}
+
+void action_RenderFrame() {
+  FastLED.clear(); // <--- important: wipes previous LED frame
+  
+  for (int ry = 0; ry < H; ry++) {        // real y: 0..9
+    for (int rx = 0; rx < W; rx++) {      // real x: 0..9
+
+      int vx = rx + CROP;                 // virtual x: 3..12
+      int vy = ry + CROP;                 // virtual y: 3..12
+
+      int idx = xyToIndex(rx, ry);
+
+      // Draw grid layer if active
+      if (grid_locked[vx][vy].second != 0) {
+        leds[idx] = COLOURS[(int)grid_locked[vx][vy].first];
+      }
+
+      // Draw entity layer if active (overwrites if overlapping)
+      if (grid_entity[vx][vy].second != 0) {
+        leds[idx] = COLOURS[(int)grid_entity[vx][vy].first];
+      }
+    }
+  }
+
+  FastLED.show();
+}
+
+// ---------------- DRAW FUNCTION ----------------
+void drawPixel(int x, int y, int colour) {
+  if (colour < 0 || colour > 8) return;
+
+  int idx = xyToIndex(x, y);
+  if (idx < 0) return;
+
+  leds[idx] = COLOURS[colour];
+  FastLED.show();
+}
+
+// ---------------- COMMAND READER ----------------
+
+void ReadCommands() {
+  static String line = "";
+
+  while (Serial.available()) {
+    char ch = (char)Serial.read();
+
+    if (ch == '\r') continue;
+
+    if (ch == '\n') {
+      line.trim();
+
+      // ----------------------------
+      // 1) drawPixel(x,y,c)
+      // ----------------------------
+      if (line.startsWith("drawPixel")) {
+        int x, y, col;
+        if (sscanf(line.c_str(), "drawPixel(%d,%d,%d)", &x, &y, &col) == 3) {
+          drawPixel(x, y, col);
+          Serial.println("OK");
+        } else {
+          Serial.println("Format error");
+        }
+        line = "";
+        continue;
+      }
+
+      // ----------------------------
+      // 2) spawnPiece
+      // ----------------------------
+      if (line.equalsIgnoreCase("spawnPiece")) {
+        int NewPiece = action_getPieceSelection();
+
+        action_SpawnPiece(NewPiece - 1, NewPiece , 6, 0, 0);
+        Serial.println("Piece spawned");
+        line = "";
+        continue;
+      }
+
+      // ----------------------------
+      // 3) Single-letter commands OR multiple letters in one line
+      //    Example: "aaddqes"
+      // ----------------------------
+      for (int i = 0; i < (int)line.length(); i++) {
+        char c = line[i];
+
+        // skip spaces/tabs just in case
+        if (c == ' ' || c == '\t') continue;
+
+        c = (char)tolower((unsigned char)c);
+
+        if (c == 'q') {
+          action_RemovePieceFromGrid();
+          int nr = (piece_rotation + 3) % 4;
+          if (!if_Collision(piece_x, piece_y, nr)) piece_rotation = nr;
+          action_AddPieceToGrid();
+        }
+        else if (c == 'e') {
+          action_RemovePieceFromGrid();
+          int nr = (piece_rotation + 1) % 4;
+          if (!if_Collision(piece_x, piece_y, nr)) piece_rotation = nr;
+          action_AddPieceToGrid();
+        }
+        else if (c == 'a') { // left
+          action_RemovePieceFromGrid();
+          if (!if_Collision(piece_x - 1, piece_y, piece_rotation)) piece_x--;
+          action_AddPieceToGrid();
+        }
+        else if (c == 'd') { // right
+          action_RemovePieceFromGrid();
+          if (!if_Collision(piece_x + 1, piece_y, piece_rotation)) piece_x++;
+          action_AddPieceToGrid();
+        }
+        else if (c == 's') { // down (soft drop one step)
+          action_RemovePieceFromGrid();
+          if (!if_Collision(piece_x, piece_y + 1, piece_rotation)) piece_y++;
+          action_AddPieceToGrid();
+        }
+        else if (c == 'g') { //reset/set
+          btn_pressed=!btn_pressed; 
+          Serial.print("Button status pressed- Status now is:  ");
+          Serial.println(btn_pressed);
+        }
+        // else: ignore unknown characters
+      }
+
+      line = ""; // IMPORTANT: always reset after processing a line
+    }
+    else {
+      // keep building the current line
+      // (avoid runaway growth if serial sends garbage)
+      if (line.length() < 64) line += ch;
+      else line = ""; // reset if too long
+    }
+  }
+}
+
+// ----------------------- Play Game -------------------
+
+// ---------------- JOYSTICK  ----------------
+
+const uint32_t debounceJoystick = 30;
+
+uint8_t lastState = 0xFF;      // last stable state (bitfield)
+uint8_t lastRead  = 0xFF;      // last raw read
+uint32_t lastChangeTime = 0;
+
+uint8_t readJoyStick() {
+  // pressed = 1, released = 0 (more intuitive)
+  uint8_t s = 0;
+  if (digitalRead(UP_PIN)    == LOW) s |= (1 << 0);
+  if (digitalRead(DOWN_PIN)  == LOW) s |= (1 << 1);
+  if (digitalRead(LEFT_PIN)  == LOW) s |= (1 << 2);
+  if (digitalRead(RIGHT_PIN) == LOW) s |= (1 << 3);
+  return s;
+}
+
+void applyJoystickToGame(uint8_t s) {
+  // If you want "NONE" debug, uncomment:
+  // if (s == 0) { Serial.println("NONE"); return; }
+
+  // IMPORTANT: do the same as your serial commands:
+  // UP = rotate (clockwise)
+  if (s & (1 << 0)) {
+    action_RemovePieceFromGrid();
+    int nr = (piece_rotation + 1) % 4;
+    if (!if_Collision(piece_x, piece_y, nr)) piece_rotation = nr;
+    action_AddPieceToGrid();
+  }
+
+  // DOWN = 's' (soft drop one step)
+  if (s & (1 << 1)) {
+    action_RemovePieceFromGrid();
+    if (!if_Collision(piece_x, piece_y + 1, piece_rotation)) piece_y++;
+    action_AddPieceToGrid();
+  }
+
+  // LEFT = 'a'
+  if (s & (1 << 2)) {
+    action_RemovePieceFromGrid();
+    if (!if_Collision(piece_x - 1, piece_y, piece_rotation)) piece_x--;
+    action_AddPieceToGrid();
+  }
+
+  // RIGHT = 'd'
+  if (s & (1 << 3)) {
+    action_RemovePieceFromGrid();
+    if (!if_Collision(piece_x + 1, piece_y, piece_rotation)) piece_x++;
+    action_AddPieceToGrid();
+  }
+
+  Serial.print("JOY state: "); Serial.println(lastState, BIN);
+}
+
+void joystickLoopGame() {
+  uint8_t now = readJoyStick();
+
+  if (now != lastRead) {
+    lastRead = now;
+    lastChangeTime = millis();
+  }
+
+  if ((millis() - lastChangeTime) >= debounceJoystick && now != lastState) {
+    lastState = now;
+
+    applyJoystickToGame(lastState);
+  }
+}
+
+// ---------------- BUTTON ----------------
+
+const unsigned long debounceBTN = 100;
+
+int button_pressed() {
+  static bool lastStableState = HIGH;
+  static bool lastReading = HIGH;
+  static unsigned long lastDebounceTime = 0;
+
+  bool reading = digitalRead(BUTTON_PIN);
+
+  if (reading != lastReading) {
+    lastDebounceTime = millis();
+    lastReading = reading;
+  }
+
+  if ((millis() - lastDebounceTime) > debounceBTN) {
+    if (reading != lastStableState) {
+      lastStableState = reading;
+
+      if (lastStableState == LOW){
+        return 1;   // pressed
+        
+      }
+      else
+        return -1;  // released
+    }
+  }
+
+  return 0;  // no event
+}
+
+
+void PlayGame(){
+  unsigned long now = millis();
+  static unsigned long lastGravity = 0;
+  static unsigned long lastDraw    = 0;
+
+  ReadCommands();
+  joystickLoopGame();
+
+  if (now - lastGravity >= 1000) {
+    lastGravity = now;
+    action_GravityOnPiece();
+  }
+  if (now - lastDraw >= 20) {
+    lastDraw = now;
+    action_RenderFrame();
+  }
+  in_menu = false;
+}
+
+void Clear_toStart(){
+  action_ClearAllGrids();
+  action_ClearLockedGrid();
+  action_DefineVirtGrid();
+  row_sum[0] = 0;
+  action_RenderFrame();
+  sequence_count = DIFF_PIECES;
+}
+
+// ---------------- SETUP / LOOP ----------------
+
+void setup() {
+  Serial.begin(115200);
+  //-----------JOY STICK-------
+  pinMode(UP_PIN,    INPUT_PULLUP);
+  pinMode(DOWN_PIN,  INPUT_PULLUP);
+  pinMode(LEFT_PIN,  INPUT_PULLUP);
+  pinMode(RIGHT_PIN, INPUT_PULLUP);
+
+  //-----------RESET BUTTON----------
+
+  pinMode(BUTTON_PIN, INPUT_PULLUP);
+
+  lastState = 0xFF;
+  lastRead  = 0xFF;
+  lastChangeTime = 0;
+
+  //---------LED SETUP-----------
+  FastLED.addLeds<LED_TYPE, LED_PIN, COLOUR_ORDER>(leds, NUM_LEDS);
+  FastLED.setBrightness(BRIGHTNESS);
+  FastLED.clear(true);
+  Clear_toStart();
+
+  //---------LCD SETUP-----------
+  Wire.begin();
+  lcd.init();
+  lcd.backlight();
+  
+  in_menu = true;
+  btn_pressed = false;
+  score = 0;
+
+  updateDisplay(score, top_score, in_menu);  // Start in menu
+}
+
+void loop() {
+
+  // Button is checked EVERY loop iteration — no blocking while loops
+  if (button_pressed() == 1) {
+    btn_pressed = !btn_pressed;
+    Serial.print("Button pressed - btn_pressed now: ");
+    Serial.println(btn_pressed);
+  }
+
+  ReadCommands();
+
+  // --- IN GAME: button pressed -> reset to menu ---
+  if (!in_menu && btn_pressed) {
+    Serial.println("In game -> reset to menu");
+    btn_pressed = false;
+    setup();
+    return; // restart loop() cleanly after setup
+  }
+
+  // --- IN MENU: button pressed -> start game ---
+  if (in_menu && btn_pressed) {
+    
+    btn_pressed = false;
+    action_StartAnimation();
+    delay(2000);
+    Clear_toStart();
+    int NewPiece = action_getPieceSelection();
+    action_SpawnPiece(NewPiece - 1, NewPiece, 6, 0, 0); //(int colour, int id, int x, int y, int rotation)
+    Serial.println("In menu -> In game");
+    in_menu = false;
+    updateDisplay(score, top_score, in_menu);
+    return; // restart loop() so game ticks begin immediately
+  }
+
+  // --- IN GAME: running ---
+  if (!in_menu && !btn_pressed && !if_GameEnd()) {
+    PlayGame();
+    return;
+  }
+
+  // --- IN GAME: game over ---
+  if (!in_menu && !btn_pressed && if_GameEnd()) {
+    Serial.println("Game over");
+    delay(2000);
+    Clear_toStart();
+    action_LostAnimation();
+    delay(4000);
+    setup();
+  }
+}
