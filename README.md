@@ -1,4 +1,5 @@
-<img width="269" height="187" alt="tetris" src="https://github.com/user-attachments/assets/1848a399-474b-424b-ad35-640e6535f681" />
+<img width="4000" height="3000" alt="20260211_185728" src="https://github.com/user-attachments/assets/0c27f03d-b76e-4155-a1c6-e1eff8f25781" />
+<img width="3000" height="4000" alt="20260223_180715" src="https://github.com/user-attachments/assets/3a507383-c70e-4c95-8035-7e96c5e06c78" />
 
 # 🎮 Tetris Arcade – LED Matrix Implementation
 
